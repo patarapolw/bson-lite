@@ -21,8 +21,12 @@
   },
   "dependencies": {
     "@types/bson": "^4.0.0",
+    "@types/lodash.filter": "^4.6.6",
+    "@types/lodash.map": "^4.6.13",
     "@types/uuid": "^3.4.5",
     "bson": "^4.0.2",
+    "lodash.filter": "^4.6.0",
+    "lodash.map": "^4.6.0",
     "uuid": "^3.3.3"
   },
   "publishConfig": {

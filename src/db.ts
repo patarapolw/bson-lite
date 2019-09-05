@@ -16,8 +16,8 @@ export class Db {
     fs.writeFileSync(this.filename, bson.serialize(this.data));
   }
 
-  public get(p: string | string[]) {
-    return dotGetter(this.data, p);
+  public get(p: string | string[], defaults?: any) {
+    return dotGetter(this.data, p, defaults);
   }
 
   public set(p: string | string[], value: any) {
@@ -25,7 +25,7 @@ export class Db {
   }
 }
 
-export function dotGetter(data: any, p: string | string[]) {
+export function dotGetter(data: any, p: string | string[], defaults?: any) {
   if (typeof p === "string") {
     p = p.split(".");
   }
@@ -41,7 +41,7 @@ export function dotGetter(data: any, p: string | string[]) {
   });
 
   if (isObjectNotNull(data) && Object.keys(data).length === 0) {
-    return undefined;
+    return defaults;
   }
 
   return data;

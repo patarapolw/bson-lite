@@ -1,6 +1,8 @@
 import { EventEmitter } from "events";
 import uuid4 from "uuid/v4";
-import { Db } from "./db";
+import { Db, dotGetter } from "./db";
+import _filter from "lodash.filter";
+import _map from "lodash.map";
 
 interface IMeta<T> {
   unique: Set<keyof T>;
@@ -30,6 +32,8 @@ export class Collection<T> {
         this.__meta.unique.add(u);
       }
     }
+
+    this.build();
   }
 
   public build() {
@@ -69,59 +73,60 @@ export class Collection<T> {
     return _id;
   }
 
-  public find(filterFn: (el: T) => boolean): T[] {
-    this.events.emit("pre-read");
+  public find(cond: any): T[] {
+    this.events.emit("pre-read", cond);
 
-    const data = Object.values<T>(this.db.get(`${this.name}.data`)).filter(filterFn);
-    this.events.emit("read", data);
+    const data = _filter(Object.values<T>(this.db.get(`${this.name}.data`, {})), cond);
+    this.events.emit("read", cond, data);
 
     return data;
   }
 
-  public get(filterFn: (el: T) => boolean): T | null {
-    return this.find(filterFn)[0] || null;
+  public get(cond: any): T | null {
+    return this.find(cond)[0] || null;
   }
 
   public update(
-    filterFn: (el: T) => boolean,
-    mapFn: (el: T) => T
+    cond: any,
+    transform: any
   ): boolean {
-    this.events.emit("pre-update");
+    this.events.emit("pre-update", cond, transform);
 
-    const changes = this.find(filterFn).map(mapFn);
+    const found = this.find(cond);
+    const changes = found.map<T>(transform);
     if (changes.some(this.isDuplicate)) {
       return false;
     }
-    this.find(filterFn).forEach(this.removeDuplicate);
+    found.forEach(this.removeDuplicate);
     changes.forEach(this.addDuplicate);
 
     for (const c of changes) {
       this.db.set(`${this.name}.data.${(c as any)._id}`, c);
     }
-    this.events.emit("update", changes);
+    this.events.emit("update", cond, transform, changes);
 
     return true;
   }
 
   public async delete(
-    filterFn: (el: T) => boolean
+    cond: any
   ) {
-    this.events.emit("pre-delete");
+    this.events.emit("pre-delete", cond);
 
-    const changes = this.find(filterFn);
+    const changes = this.find(cond);
     changes.forEach(this.removeDuplicate);
 
     for (const c of changes) {
       this.db.set(`${this.name}.data.${(c as any)._id}`, undefined);
     }  
 
-    this.events.emit("delete");
+    this.events.emit("delete", cond, changes);
   }
 
   private isDuplicate(entry: T): boolean {
-    const unique = this.db.get(`${this.name}.__meta.unique`).value();
+    const unique = this.db.get(`${this.name}.__meta.unique`, {});
     for (const u of this.__meta.unique) {
-      if (unique[u][(entry as any)[u]]) {
+      if (dotGetter(unique, [u, (entry as any)[u]])) {
         return true;
       }
     }
