@@ -1,22 +1,20 @@
 import { EventEmitter } from "events";
 import uuid4 from "uuid/v4";
-import { Db, dotGetter } from "./db";
+import { Db, isObjectNotNull } from "./db";
 import _filter from "lodash.filter";
 import _map from "lodash.map";
 
 interface IMeta<T> {
-  unique: Set<keyof T>;
+  unique: Partial<Record<keyof T, boolean>>;
+  indexes: Partial<Record<keyof T, Record<string, string[]>>>; 
 }
 
 interface ICollectionOptions<T> {
   unique?: Array<keyof T>;
+  indexes?: Array<keyof T>;
 }
 
 export class Collection<T> {
-  private __meta: IMeta<T> = {
-    unique: new Set()
-  };
-
   private db: Db;
   private name: string;
   
@@ -27,23 +25,25 @@ export class Collection<T> {
     this.name = name;
     this.events = new EventEmitter();
 
-    if (options.unique) {
-      for (const u of options.unique) {
-        this.__meta.unique.add(u);
-      }
-    }
-
-    this.build();
-  }
-
-  public build() {
     if (!this.db.get(this.name)) {
       this.db.set(this.name, {
         __meta: {
           unique: (() => {
             const output: any = {};
-            for (const u of this.__meta.unique) {
-              output[u] = {};
+            if (options.unique) {
+              for (const u of options.unique) {
+                output[u] = {};
+              }
+            }
+
+            return output;
+          })(),
+          indexes: (() => {
+            const output: any = {};
+            if (options.indexes) {
+              for (const i of options.indexes) {
+                output[i] = {};
+              }
             }
 
             return output;
@@ -54,6 +54,10 @@ export class Collection<T> {
     }
   }
 
+  get __meta(): IMeta<T> {
+    return this.db.get(`${this.name}.__meta`);
+  }
+
   public create(entry: T): string | null {
     this.events.emit("pre-create", entry);
 
@@ -62,12 +66,18 @@ export class Collection<T> {
     }
 
     this.addDuplicate(entry);
-    
-    const _id = uuid4();
+
+    let { _id } = entry as any;
+    if (!_id) {
+      _id = uuid4();
+    }
+  
     this.db.set(`${this.name}.data.${_id}`, {
       _id,
       ...entry
     });
+
+    this.addIndex(entry, _id);
 
     this.events.emit("create", entry);
     return _id;
@@ -75,8 +85,23 @@ export class Collection<T> {
 
   public find(cond: any): T[] {
     this.events.emit("pre-read", cond);
+    let data: T[] | null = [];
 
-    const data = _filter(Object.values<T>(this.db.get(`${this.name}.data`, {})), cond);
+    if (isObjectNotNull(cond) && Object.keys(cond).length === 1) {
+      const k = Object.keys(cond)[0];
+      if (k === "_id") {
+        data = this.getByIndex(cond[k]);
+      }
+      const indexes = this.__meta.indexes;
+      if (Object.keys(indexes).includes(k)) {
+        data = this.getByIndex(cond[k], k);
+      }
+    }
+
+    if (!data) {
+      data = _filter(Object.values<T>(this.db.get(`${this.name}.data`, {})), cond);
+    }
+
     this.events.emit("read", cond, data);
 
     return data;
@@ -84,6 +109,19 @@ export class Collection<T> {
 
   public get(cond: any): T | null {
     return this.find(cond)[0] || null;
+  }
+
+  public getByIndex(_id: string, indexName?: string): T[] {
+    if (indexName) {
+      const indexes = this.__meta.indexes;
+      if (!Object.keys(indexes).includes(indexName)) {
+        throw new Error("Invalid index name");
+      }
+
+      return this.getIndex(indexName as any, _id).map((el) => this.getByIndex(el)[0]);
+    }
+
+    return [this.db.get(`${this.name}.data.${_id}`)]
   }
 
   public update(
@@ -118,15 +156,15 @@ export class Collection<T> {
 
     for (const c of changes) {
       this.db.set(`${this.name}.data.${(c as any)._id}`, undefined);
+      this.removeIndex(c, (c as any)._id);
     }  
 
     this.events.emit("delete", cond, changes);
   }
 
   private isDuplicate(entry: T): boolean {
-    const unique = this.db.get(`${this.name}.__meta.unique`, {});
-    for (const u of this.__meta.unique) {
-      if (dotGetter(unique, [u, (entry as any)[u]])) {
+    for (const [k, v] of Object.entries<any>(this.__meta.unique)) {
+      if (v[(entry as any)[k]]) {
         return true;
       }
     }
@@ -135,15 +173,43 @@ export class Collection<T> {
   }
 
   private addDuplicate(entry: T) {
-    Array.from(this.__meta.unique).map((u) => {
+    Object.keys(this.__meta.unique).map((u) => {
       return this.db.set(`${this.name}.__meta.unique.${u}.${(entry as any)[u]}`, true);
     });
   }
 
   private removeDuplicate(entry: T) {
-    Array.from(this.__meta.unique).map((u) => {
+    Object.keys(this.__meta.unique).map((u) => {
       return this.db.set(`${this.name}.__meta.unique.${u}.${(entry as any)[u]}`, undefined);
     });
+  }
+
+  private getIndex(k: keyof T, v: string): string[] {
+    return this.db.get(`${this.name}.__meta.indexes.${k}.${v}`, []);
+  }
+
+  private addIndex(entry: T, _id: string) {
+    const indexes = this.__meta.indexes;
+    for (const [k, v] of Object.entries(entry)) {
+      if (Object.keys(indexes).includes(k)) {
+        const ids: string[] = this.getIndex(k as any, v);
+        if (!ids.includes(_id)) {
+          ids.push(_id);
+          this.db.set(`${this.name}.__meta.indexes.${k}.${v}`, ids);
+        }
+      }
+    }
+  }
+
+  private removeIndex(entry: T, _id: string) {
+    const indexes = this.__meta.indexes;
+    for (const [k, v] of Object.entries(entry)) {
+      if (Object.keys(indexes).includes(k)) {
+        const ids: string[] = this.getIndex(k as any, v);
+        ids.splice(ids.indexOf(_id), 1);
+        this.db.set(`${this.name}.__meta.indexes.${k}.${v}`, ids);
+      }
+    }
   }
 }
 
@@ -163,19 +229,27 @@ export function joinCollection<T, U>(
   }> = {};
 
   for (const l of left.col) {
+    let key: any;
     if (l[left.key]) {
-      joinMap[left.key as any].left = l;
+      key = l[left.key];
     } else if (left.null) {
-      joinMap.__.left = l;
+      key = uuid4();
     }
+
+    joinMap[key] = joinMap[key] || {};
+    joinMap[key].left = l;
   }
 
   for (const r of right.col) {
+    let key: any;
     if (r[right.key]) {
-      joinMap[right.key as any].right = r;
+      key = r[right.key];
     } else if (right.null) {
-      joinMap.__.right = r;
+      key = uuid4();
     }
+
+    joinMap[key] = joinMap[key] || {};
+    joinMap[key].right = r;
   }
 
   return Object.values(joinMap)
